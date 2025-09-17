@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import math
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 from vllm.distributed.kv_events import KVCacheEvent
 from vllm.logger import init_logger
@@ -14,6 +15,8 @@ from vllm.v1.core.kv_cache_utils import (BlockHash, KVCacheBlock,
 from vllm.v1.kv_cache_interface import KVCacheConfig
 from vllm.v1.metrics.stats import PrefixCacheStats
 from vllm.v1.request import Request, RequestStatus
+from ucm.integration.vllm.ucm_sparse.state import get_ucm_sparse, has_ucm_sparse
+from ucm.integration.vllm.ucm_sparse.base import INVALID_SLOT
 
 logger = init_logger(__name__)
 
@@ -193,6 +196,7 @@ class KVCacheManager:
         num_draft_tokens: int = 0,
         num_lookahead_tokens: int = 0,
         delay_cache_blocks: bool = False,
+        num_slots_sparsed: Union[None, int] = None
     ) -> Optional[KVCacheBlocks]:
         """Add slots for a request with new tokens to append.
 
@@ -231,6 +235,32 @@ class KVCacheManager:
         """
         if num_new_tokens == 0:
             raise ValueError("num_new_tokens must be greater than 0")
+        
+        if num_slots_sparsed != INVALID_SLOT:
+            self.block_size = self.kv_cache_config.kv_cache_groups[0].kv_cache_spec.block_size
+            num_blocks_need = math.ceil(num_slots_sparsed / self.block_size)
+            allocated_blocks = self.coordinator.get_blocks(request.request_id)[0]
+            returned_blocks = []
+            sparsed_blocks = []
+            for i, block in enumerate(allocated_blocks):
+                if i < num_blocks_need:
+                    sparsed_blocks.append(block)
+                else:
+                    returned_blocks.append(block)
+                self.block_pool._maybe_evict_cached_block(block)
+            self.block_pool.free_blocks(returned_blocks)
+            self.coordinator.single_type_managers[0].req_to_blocks[request.request_id] = sparsed_blocks
+            new_computed_block_list = tuple(
+                [] for _ in range(len(self.kv_cache_config.kv_cache_groups)))
+            num_blocks_to_allocate = self.coordinator.get_num_blocks_to_allocate(
+                request_id=request.request_id,
+                num_tokens=num_slots_sparsed,
+                new_computed_blocks=new_computed_block_list,
+            )
+            if num_blocks_to_allocate > self.block_pool.get_num_free_blocks():
+                return None
+            new_blocks = self.coordinator.allocate_new_blocks(request.request_id, num_slots_sparsed)
+            return KVCacheBlocks(tuple([sparsed_blocks]))
 
         if new_computed_blocks is not None:
             new_computed_block_list = new_computed_blocks.blocks
