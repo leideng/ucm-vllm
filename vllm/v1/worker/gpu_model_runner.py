@@ -475,6 +475,24 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             resumed_from_preemption = req_data.resumed_from_preemption[i]
 
             # Update the cached states.
+            if (num_computed_tokens <= req_state.num_computed_tokens):
+                # The request was rescheduled after a KV load failure. Clear
+                # the last sampled tokens and rewind the generator state
+                len_output_token_ids = len(req_state.output_token_ids)
+                del req_state.output_token_ids[req_state.
+                                               len_last_output_token_ids:]
+                if req_state.generator:
+                    req_state.generator.set_offset(
+                        req_state.last_generator_offset)
+                req_index = self.input_batch.req_id_to_index.get(req_id)
+                if req_index is not None:
+                    len_last_sampled = (len_output_token_ids -
+                                        req_state.len_last_output_token_ids)
+                    end_idx = self.input_batch.num_tokens_no_spec[
+                        req_index] - len_last_sampled
+                    self.input_batch.num_tokens[req_index] = end_idx
+                    self.input_batch.num_tokens_no_spec[req_index] = end_idx
+                    
             req_state.num_computed_tokens = num_computed_tokens
 
             if not is_last_rank:
@@ -492,6 +510,12 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 elif num_new_tokens > 0:
                     req_state.output_token_ids.extend(
                         new_token_ids[-num_new_tokens:])
+                    
+            req_state.len_last_output_token_ids = len(
+                req_state.output_token_ids)
+            if req_state.generator:
+                req_state.last_generator_offset = (
+                    req_state.generator.get_offset())
 
             # Update the block IDs.
             if not resumed_from_preemption:
@@ -511,6 +535,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # scheduled in the previous step and needs to be added again.
                 req_ids_to_add.append(req_id)
                 continue
+            
+            if req_state.generator:
+                assert (req_state.last_generator_offset is not None)
+                self.input_batch.generators_last_offset[
+                    req_index] = req_state.last_generator_offset
 
             # Update the persistent batch.
             self.input_batch.num_computed_tokens_cpu[req_index] = (
@@ -1378,9 +1407,10 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 inputs_embeds=inputs_embeds,
             )
 
-            self.maybe_wait_for_kv_save()
+            finished_dumping = self.maybe_wait_for_kv_save()
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
+            invalid_block_ids = self.get_block_ids_with_load_errors()
 
         if self.use_aux_hidden_state_outputs:
             hidden_states, aux_hidden_states = model_output
@@ -1474,7 +1504,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
                 # This relies on cuda-specific torch-internal impl details
                 generator = self.input_batch.generators.get(i)
                 if generator is not None:
-                    generator.set_offset(generator.get_offset() - 4)
+                    generator.set_offset(
+                        self.input_batch.generators_last_offset.get(i))
                 # Record the index of the request that should not be sampled,
                 # so that we could clear the sampled tokens before returning.
                 discard_sampled_tokens_req_indices.append(i)
@@ -1563,6 +1594,8 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             finished_sending=finished_sending,
             finished_recving=finished_recving,
             num_nans_in_logits=num_nans_in_logits,
+            finished_dumping=finished_dumping,
+            invalid_block_ids = invalid_block_ids
         )
 
     def propose_draft_token_ids(
@@ -1693,13 +1726,16 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             self.maybe_setup_kv_connector(scheduler_output)
             finished_sending, finished_recving = (
                 self.get_finished_kv_transfers(scheduler_output))
+            invalid_block_ids = self.get_block_ids_with_load_errors()
+            get_kv_transfer_group().clear_connector_metadata()
 
-        if not finished_sending and not finished_recving:
+        if not finished_sending and not finished_recving and not invalid_block_ids:
             return EMPTY_MODEL_RUNNER_OUTPUT
 
         output = copy.copy(EMPTY_MODEL_RUNNER_OUTPUT)
         output.finished_sending = finished_sending
         output.finished_recving = finished_recving
+        output.invalid_block_ids = invalid_block_ids
         return output
 
     @staticmethod
@@ -1719,9 +1755,9 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             kv_connector.start_load_kv(get_forward_context())
 
     @staticmethod
-    def maybe_wait_for_kv_save() -> None:
+    def maybe_wait_for_kv_save() -> Optional[dict[str, list[str]]]:
         if has_kv_transfer_group():
-            get_kv_transfer_group().wait_for_save()
+            return get_kv_transfer_group().wait_for_save()
 
     @staticmethod
     def get_finished_kv_transfers(
@@ -1731,6 +1767,11 @@ class GPUModelRunner(LoRAModelRunnerMixin):
             return get_kv_transfer_group().get_finished(
                 scheduler_output.finished_req_ids)
         return None, None
+    
+    def get_block_ids_with_load_errors(self) -> Optional[set[int]]:
+        if has_kv_transfer_group():
+            return get_kv_transfer_group().get_block_ids_with_load_errors()
+        return None
 
     def propose_ngram_draft_token_ids(
         self,
