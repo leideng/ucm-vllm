@@ -405,12 +405,15 @@ def unified_attention(
     wait_for_kv_layer_from_connector(layer_name)
 
     forward_context: ForwardContext = get_forward_context()
+    
+    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
+    
     attn_metadata = forward_context.attn_metadata
     if isinstance(attn_metadata, dict):
         attn_metadata = attn_metadata[layer_name]
     self = forward_context.no_compile_layers[layer_name]
     kv_cache = self.kv_cache[forward_context.virtual_engine]
-    maybe_execute_sparse_attention_begin(query, key, value, layer_name, forward_context)
+    
     output = self.impl.forward(self, query, key, value, kv_cache,
                                attn_metadata)
     maybe_execute_sparse_attention_finished(query, key, value, output, layer_name, forward_context)
