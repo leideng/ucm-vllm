@@ -453,7 +453,7 @@ def unified_attention_with_output(
     kv_cache = self.kv_cache[forward_context.virtual_engine]
     if not self.use_mla:
         if attn_metadata is not None:
-            if os.environ["VLLM_HASH_ATTENTION"] == "1":
+            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
                 kv_cache, k_hash = kv_cache
             else:
                 k_hash = None

@@ -693,7 +693,7 @@ def _get_kv_cache_config_uniform_type(vllm_config: VllmConfig,
     num_blocks = get_num_blocks(vllm_config, len(kv_cache_spec),
                                 available_memory, page_size)
 
-    if os.environ["VLLM_HASH_ATTENTION"] == "1":
+    if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
         from vllm.utils import STR_DTYPE_TO_TORCH_DTYPE
 
         if vllm_config.cache_config.cache_dtype == 'auto':

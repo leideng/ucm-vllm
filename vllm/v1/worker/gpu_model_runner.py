@@ -2625,7 +2625,7 @@ class GPUModelRunner(LoRAModelRunnerMixin):
 
         if has_ucm_sparse():
             ucm_sparse = get_ucm_sparse()
-            if os.environ["VLLM_HASH_ATTENTION"] == "1":
+            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
                 ucm_sparse.initialize_kv_hash_cache_tensors(kv_caches, self.device)
 
         # Setup `kv_cache_config` and `kv_caches` for models

@@ -84,7 +84,7 @@ class FlashMLAMetadataBuilder(MLACommonMetadataBuilder[FlashMLAMetadata]):
         topk_num_splits = None
         if has_ucm_sparse():
             ucm_sparse = get_ucm_sparse()
-            if os.environ["VLLM_HASH_ATTENTION"] == "1":
+            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
                 topk_seq_lens, topk_tile_scheduler_metadata, topk_num_splits = ucm_sparse.build_decode_hash(seq_lens)
 
         if self.runner.full_cuda_graph:

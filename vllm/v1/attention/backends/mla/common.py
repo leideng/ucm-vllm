@@ -948,7 +948,7 @@ class MLACommonImpl(MLAAttentionImpl[M], Generic[M]):
         prefill_k_pe = k_pe[num_decode_tokens:]
         prefill_k_c_normed = k_c_normed[num_decode_tokens:]
 
-        if os.environ["VLLM_HASH_ATTENTION"] == "1":
+        if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
             kv_cache, k_hash = kv_cache
         else:
             k_hash = None

@@ -225,7 +225,7 @@ class FlashAttentionMetadataBuilder(
 
         if has_ucm_sparse():
             ucm_sparse = get_ucm_sparse()
-            if os.environ["VLLM_HASH_ATTENTION"] == "1":
+            if os.getenv("VLLM_HASH_ATTENTION", "0") == "1":
                 decode_mask, topk_seq_lens = ucm_sparse.build_decode_attention_meta(query_start_loc, seq_lens, block_table_tensor)
 
         block_table.slot_mapping[:num_actual_tokens].copy_(
